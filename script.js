@@ -70,21 +70,37 @@
         ];
 
         // Заголовки блоков сайдбара по стартовой позиции.
-        const SIDEBAR_BLOCKS = {
-            1: 'Introductory (Simple)',
-            6: 'Basic (Simple–Medium)',
-            11: 'Intermediate (Medium)',
-            16: 'Advanced (Hard)'
-        };
+        // Порядок блоков сложности. В интерфейсе ученику не показывается —
+        // ярлык «Hard» до попытки программирует на провал, — но остаётся
+        // шкалой, по которой считается потолок в отчёте.
+        const TIERS = ['Introductory', 'Basic', 'Intermediate', 'Advanced', 'Olympiad'];
+
+        // Разбор label вида 'Intermediate • Programming, Reasoning'.
+        // Слепки состояния заданий на момент первого открытия. Нужны, чтобы
+        // отличить «пропустил» от «пробовал и не вышло»: без этого нерешённое
+        // задание и незаходил выглядят одинаково, а выводы из них разные.
+        const baseline = {};
+        function snapshot(fn) {
+            try { return JSON.stringify(state['q' + fn]); } catch (e) { return null; }
+        }
+        // solved → attempted → skipped. Решённое всегда считается попыткой.
+        function statusOf(fn) {
+            if (state.completed.has(fn)) return 'solved';
+            if (baseline[fn] !== undefined && snapshot(fn) !== baseline[fn]) return 'attempted';
+            return 'skipped';
+        }
+
+        function tierOf(q) { return q.label.split('•')[0].trim(); }
+        function domainsOf(q) {
+            return (q.label.split('•')[1] || '').split(',').map(s => s.trim()).filter(Boolean);
+        }
 
         function buildSidebar() {
             const sidebar = document.querySelector('.sidebar');
             if (!sidebar) return;
             let html = '';
+            html += `<div class="sidebar-title">Tasks</div>`;
             for (let pos = 1; pos < QUESTIONS.length; pos++) {
-                if (SIDEBAR_BLOCKS[pos]) {
-                    html += `<div class="sidebar-title"${pos > 1 ? ' style="margin-top: 20px;"' : ''}>${SIDEBAR_BLOCKS[pos]}</div>`;
-                }
                 const q = QUESTIONS[pos];
                 const cls = 'question-btn'
                     + (pos === state.current ? ' active' : '')
@@ -125,13 +141,18 @@
                 default: content.innerHTML = `<div class="coming-soon">Question not found</div>`;
             }
 
-            // Номер «Qxx» и метку сложности берём из QUESTIONS, перекрывая то, что
-            // зашито внутри renderQ*, — так порядок и метки всегда согласованы.
+            // Номер «Qxx» и тему берём из QUESTIONS, перекрывая то, что зашито
+            // внутри renderQ*, — так порядок и метки всегда согласованы.
+            // Сложность здесь намеренно не выводим: она нужна только отчёту.
             if (q) {
                 const numEl = content.querySelector('.question-number');
                 const titleEl = content.querySelector('.question-title');
-                if (numEl) numEl.textContent = q.label;
+                if (numEl) numEl.textContent = domainsOf(q).join(', ');
                 if (titleEl) titleEl.textContent = `Q${state.current}: ${q.title}`;
+                // Слепок состояния снимаем ПОСЛЕ первого рендера: часть заданий
+                // достраивает своё состояние лениво, и без этого простое открытие
+                // задания выглядело бы как попытка решить.
+                if (baseline[q.fn] === undefined) baseline[q.fn] = snapshot(q.fn);
             }
         }
 
@@ -2030,68 +2051,174 @@ Start at rem 0. If you END at rem 0, the number is divisible by 3.</code></div>
         }
 
         function renderResults() {
-            const blockNames = ['Introductory', 'Basic', 'Intermediate', 'Advanced'];
-            const blockLabels = ['Introductory (Simple)', 'Basic (Simple–Medium)', 'Intermediate (Medium)', 'Advanced (Hard)'];
-            const blockColor = ['#34C759', '#3844FF', '#8a63d2', '#d2691e'];
+            const C = { solved: '#34C759', attempted: '#ff9f0a', skipped: '#c7c7cc' };
 
-            const solved = [0, 0, 0, 0];
+            // Что известно про каждое задание: тема, блок сложности, статус.
             const items = [];
             for (let pos = 1; pos < QUESTIONS.length; pos++) {
                 const q = QUESTIONS[pos];
-                const done = state.completed.has(q.fn);
-                const b = Math.floor((pos - 1) / 5);
-                if (done) solved[b]++;
-                items.push({ pos, title: q.title, done });
+                const tier = tierOf(q);
+                items.push({
+                    pos, fn: q.fn, title: q.title, tier,
+                    tierIdx: TIERS.indexOf(tier),
+                    domains: domainsOf(q),
+                    status: statusOf(q.fn)
+                });
             }
-            const total = solved.reduce((a, c) => a + c, 0);
+            const solvedTotal = items.filter(it => it.status === 'solved').length;
+            const attemptedN  = items.filter(it => it.status === 'attempted').length;
+            const skippedN    = items.filter(it => it.status === 'skipped').length;
 
-            // Уровень = самый высокий блок с ≥3/5 при условии, что все блоки ниже тоже ≥3/5.
-            let levelIdx = -1;
-            for (let i = 0; i < 4; i++) {
-                if (solved[i] >= 3) levelIdx = i; else break;
+            // Потолок домена: самый высокий блок, где взята хотя бы половина заданий
+            // этого домена, при условии что все блоки ниже тоже взяты. Блок, в котором
+            // у домена нет заданий, цепочку не рвёт — за непройденное его считать нельзя.
+            function profile(domain) {
+                const mine = items.filter(it => it.domains.includes(domain));
+                let ceilIdx = -1;
+                for (let i = 0; i < TIERS.length; i++) {
+                    const grp = mine.filter(it => it.tier === TIERS[i]);
+                    if (!grp.length) continue;
+                    const got = grp.filter(it => it.status === 'solved').length;
+                    if (got >= Math.ceil(grp.length / 2)) ceilIdx = i; else break;
+                }
+                return {
+                    domain, mine, ceilIdx,
+                    ceiling: ceilIdx === -1 ? 'Emerging' : TIERS[ceilIdx],
+                    solved: mine.filter(it => it.status === 'solved').length,
+                    total: mine.length
+                };
             }
-            const level = levelIdx === -1 ? 'Beginner' : blockNames[levelIdx];
-            const levelColor = levelIdx === -1 ? '#8e8e93' : blockColor[levelIdx];
 
-            const blockRows = blockNames.map((name, i) => {
-                const c = solved[i];
-                const pass = c >= 3;
-                const reached = i <= levelIdx;
-                return `<div style="margin-bottom:12px;">
-                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
-                        <span style="font-weight:600;">${blockLabels[i]}</span>
-                        <span style="color:${pass ? '#34C759' : '#999'};font-weight:600;">${c}/5 ${pass ? '✓' : ''}</span>
+            const math = profile('Mathematics');
+            const prog = profile('Programming');
+            const reas = profile('Reasoning');
+
+            const bar = (p, color) => `
+                <div style="margin-bottom:18px;">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+                        <span style="font-weight:700;font-size:15px;">${p.domain}</span>
+                        <span style="font-size:13px;color:#666;">${p.solved} of ${p.total} solved</span>
                     </div>
-                    <div style="background:#eee;border-radius:6px;height:10px;overflow:hidden;">
-                        <div style="width:${(c / 5) * 100}%;height:100%;background:${reached ? levelColor : (pass ? '#34C759' : '#c7c7cc')};"></div>
+                    <div style="background:#eee;border-radius:6px;height:12px;overflow:hidden;">
+                        <div style="width:${p.total ? (p.solved / p.total) * 100 : 0}%;height:100%;background:${color};"></div>
                     </div>
+                    <div style="font-size:12px;color:#777;margin-top:5px;">
+                        Confident up to: <b style="color:#1d1d1f;">${p.ceiling}</b>
+                    </div>
+                </div>`;
+
+            // Следующий шаг берём с нижней непройденной ступени слабого домена:
+            // подниматься имеет смысл от ближайшего края, а не от самого сложного.
+            function nextSteps(p) {
+                return p.mine
+                    .filter(it => it.status !== 'solved')
+                    .sort((a, b) => a.tierIdx - b.tierIdx
+                        || (a.status === 'attempted' ? 0 : 1) - (b.status === 'attempted' ? 0 : 1)
+                        || a.pos - b.pos)
+                    .slice(0, 3);
+            }
+
+            const weaker = math.ceilIdx <= prog.ceilIdx ? math : prog;
+            const stronger = weaker === math ? prog : math;
+            const gap = stronger.ceilIdx - weaker.ceilIdx;
+
+            let meaning;
+            if (solvedTotal === 0) {
+                meaning = `Nothing is solved yet, so there is no profile to read. Start with the first few tasks — they only need careful reading, not special knowledge.`;
+            } else if (solvedTotal === items.length) {
+                meaning = `Every task is solved, in both subjects and at every level — including the hardest ones. This test has nothing left to measure; the next step is material harder than it goes.`;
+            } else if (math.ceilIdx === -1 && prog.ceilIdx === -1) {
+                meaning = `${solvedTotal} ${solvedTotal === 1 ? 'task is' : 'tasks are'} solved, but not yet enough in any one group to place a level. Finishing the earliest unsolved tasks would make this profile readable.`;
+            } else if (gap === 0) {
+                meaning = `Mathematics and programming are moving together, both confident up to <b>${math.ceiling}</b>. That is a healthy shape: the next step is the same in both — one rung up, not a catch-up in either.`;
+            } else if (gap === 1) {
+                meaning = `${stronger.domain} runs slightly ahead of ${weaker.domain.toLowerCase()} (<b>${stronger.ceiling}</b> vs <b>${weaker.ceiling}</b>). A gap of one rung is normal and not worth special measures — keep both moving.`;
+            } else {
+                meaning = weaker === prog
+                    ? `The formal reasoning is clearly ahead of the coding: <b>${stronger.ceiling}</b> in mathematics against <b>${weaker.ceiling}</b> in programming. The ideas are there but do not yet turn into a procedure — that is a skill of its own, and it is the thing to train.`
+                    : `The coding is clearly ahead of the mathematics: <b>${stronger.ceiling}</b> in programming against <b>${weaker.ceiling}</b> in mathematics. Machinery is working faster than the reasoning behind it — worth slowing down on the why, not only the how.`;
+            }
+
+            // Если слабый домен уже закрыт, шаг берём из сильного, а не упираемся в тупик.
+            const steps = nextSteps(weaker).length ? nextSteps(weaker) : nextSteps(stronger);
+            const stepsHtml = steps.length
+                ? `<ol style="margin:0;padding-left:20px;line-height:1.7;">${steps.map(it =>
+                    `<li>Q${it.pos} <b>${it.title}</b>${it.status === 'attempted' ? ' — already started, worth finishing' : ''}</li>`).join('')}</ol>`
+                : `<div>All 20 tasks are solved — there is nothing left here to try.</div>`;
+
+            // Пропущенное — не пробел в знаниях, и в выводах на него опираться нельзя.
+            const coverage = skippedN === 0
+                ? `Every task was opened, so this profile rests on the full set.`
+                : `<b>${skippedN}</b> ${skippedN === 1 ? 'task was' : 'tasks were'} never attempted and ${skippedN === 1 ? 'is' : 'are'} not counted as a gap${skippedN > 5 ? ' — with that many untouched, treat the profile as provisional' : ''}.`;
+
+            const grid = items.map(it => {
+                const c = C[it.status];
+                const mark = it.status === 'solved' ? '✓' : (it.status === 'attempted' ? '◐' : '○');
+                return `<div title="Q${it.pos}: ${it.title} — ${it.status}" style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:${it.status === 'solved' ? '#e8f9ee' : (it.status === 'attempted' ? '#fff6e6' : '#f6f6f8')};font-size:11px;overflow:hidden;">
+                    <span style="color:${c};font-weight:700;">${mark}</span>
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Q${it.pos} ${it.title}</span>
                 </div>`;
             }).join('');
 
-            const grid = items.map(it => `
-                <div title="Q${it.pos}: ${it.title}" style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:${it.done ? '#e8f9ee' : '#f6f6f8'};font-size:11px;overflow:hidden;">
-                    <span style="color:${it.done ? '#34C759' : '#c7c7cc'};font-weight:700;">${it.done ? '✓' : '○'}</span>
-                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Q${it.pos} ${it.title}</span>
-                </div>`).join('');
+            // Разбивка по блокам — только внутри блока для взрослого.
+            const tierRows = TIERS.map(t => {
+                const grp = items.filter(it => it.tier === t);
+                if (!grp.length) return '';
+                const s = grp.filter(it => it.status === 'solved').length;
+                const a = grp.filter(it => it.status === 'attempted').length;
+                return `<tr>
+                    <td style="padding:4px 10px 4px 0;">${t}</td>
+                    <td style="padding:4px 10px 4px 0;text-align:right;">${s}/${grp.length}</td>
+                    <td style="padding:4px 0;color:#888;">${a ? a + ' attempted, unsolved' : '—'}</td>
+                </tr>`;
+            }).join('');
 
-            const explain = levelIdx === -1
-                ? `Solve at least <b>3 of 5</b> in the “Introductory” block to reach the first level.`
-                : (levelIdx < 3
-                    ? `All blocks up to <b>${blockNames[levelIdx]}</b> cleared (≥3/5 each). The next block, “${blockNames[levelIdx + 1]}”, is not cleared yet (${solved[levelIdx + 1]}/5 — needs ≥3).`
-                    : `Top result: every block cleared (≥3/5), including Advanced.`);
+            return `<div class="question-header"><div class="question-number">Diagnostic Profile</div>
+                <div class="question-title">Where you are now</div></div>
 
-            return `<div class="question-header"><div class="question-number">Test Results</div>
-                <div class="question-title">Your Level</div></div>
-                <div style="text-align:center;margin:24px 0;">
-                    <div style="font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px;">Level</div>
-                    <div style="font-size:44px;font-weight:800;color:${levelColor};margin:6px 0;">${level}</div>
-                    <div style="font-size:14px;color:#555;">Solved: <b>${total}</b> of 20</div>
-                </div>
-                <div style="max-width:520px;margin:0 auto 18px;">${blockRows}</div>
-                <div style="max-width:520px;margin:0 auto 18px;padding:12px 14px;background:#f6f8ff;border:1px solid #dfe4ff;border-radius:8px;font-size:13px;color:#333;line-height:1.5;">${explain}</div>
-                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;max-width:520px;margin:0 auto 22px;">${grid}</div>
-                <div style="text-align:center;">
-                    <button onclick="switchQuestion(state.current)" class="btn btn-secondary">← Back to Test</button>
+                <div style="max-width:560px;margin:0 auto;">
+                    <div style="text-align:center;margin:4px 0 26px;">
+                        <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#999;text-transform:uppercase;margin-bottom:10px;">Diagnostic profile</div>
+                        <div style="font-size:34px;font-weight:800;color:#1d1d1f;">${solvedTotal} <span style="font-size:20px;font-weight:600;color:#888;">of 20 solved</span></div>
+                        <div style="font-size:13px;color:#888;margin-top:4px;">${attemptedN} more attempted · ${skippedN} not opened</div>
+                    </div>
+
+                    ${bar(math, '#3844FF')}
+                    ${bar(prog, '#8a63d2')}
+
+                    <div style="font-size:12px;color:#777;margin:-6px 0 20px;padding:8px 10px;background:#fafafa;border-radius:6px;">
+                        Reasoning (a secondary signal, only ${reas.total} tasks and mostly at the harder end): <b>${reas.solved}/${reas.total}</b>
+                    </div>
+
+                    <div style="padding:14px 16px;background:#f6f8ff;border:1px solid #dfe4ff;border-radius:8px;font-size:14px;line-height:1.6;color:#333;margin-bottom:16px;">
+                        <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#5b6bd6;text-transform:uppercase;margin-bottom:6px;">What this means</div>
+                        ${meaning}
+                    </div>
+
+                    <div style="padding:14px 16px;background:#f3fbf5;border:1px solid #cfe9d8;border-radius:8px;font-size:14px;color:#333;margin-bottom:16px;">
+                        <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#2e9e55;text-transform:uppercase;margin-bottom:8px;">Try next</div>
+                        ${stepsHtml}
+                    </div>
+
+                    <div style="font-size:12px;color:#777;margin-bottom:18px;">${coverage}</div>
+
+                    <details style="margin-bottom:22px;border:1px solid #e6e6e6;border-radius:8px;padding:10px 14px;">
+                        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:#555;">For teachers and parents</summary>
+                        <div style="font-size:13px;color:#444;line-height:1.6;margin-top:10px;">
+                            <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#999;text-transform:uppercase;margin-bottom:6px;">By block · both subjects combined</div>
+                            <table style="border-collapse:collapse;font-size:13px;margin-bottom:12px;">
+                                <tbody>${tierRows}</tbody>
+                            </table>
+                            <p style="margin:0 0 8px;">A block counts as cleared when at least half of its tasks in that subject are solved, and every block below it is cleared too. The ceiling is the highest block that holds.</p>
+                            <p style="margin:0 0 8px;">Read this as a placement hint, not a measurement. It records only whether a task was solved — not how long it took, how many tries it needed, or whether help was used. An unopened task says nothing either way.</p>
+                            <p style="margin:0 0 12px;">Worth checking by hand: the tasks marked <b>◐</b> — engagement without a solution is where the actual teaching point usually sits.</p>
+                            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;">${grid}</div>
+                        </div>
+                    </details>
+
+                    <div style="text-align:center;">
+                        <button onclick="switchQuestion(state.current)" class="btn btn-secondary">← Back to Test</button>
+                    </div>
                 </div>`;
         }
 
