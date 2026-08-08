@@ -2075,23 +2075,23 @@ Start at rem 0. If you END at rem 0, the number is divisible by 3.</code></div>
                 </div>`).join('');
 
             const explain = levelIdx === -1
-                ? `Реши минимум <b>3 из 5</b> в блоке «Introductory», чтобы достичь первого уровня.`
+                ? `Solve at least <b>3 of 5</b> in the “Introductory” block to reach the first level.`
                 : (levelIdx < 3
-                    ? `Уверенно пройдены блоки до <b>${blockNames[levelIdx]}</b> включительно (≥3/5 в каждом). Следующий блок «${blockNames[levelIdx + 1]}» пока не пройден (${solved[levelIdx + 1]}/5 — нужно ≥3).`
-                    : `Максимальный результат: все блоки пройдены (≥3/5), включая Advanced.`);
+                    ? `All blocks up to <b>${blockNames[levelIdx]}</b> cleared (≥3/5 each). The next block, “${blockNames[levelIdx + 1]}”, is not cleared yet (${solved[levelIdx + 1]}/5 — needs ≥3).`
+                    : `Top result: every block cleared (≥3/5), including Advanced.`);
 
-            return `<div class="question-header"><div class="question-number">Результаты теста</div>
-                <div class="question-title">Твой уровень</div></div>
+            return `<div class="question-header"><div class="question-number">Test Results</div>
+                <div class="question-title">Your Level</div></div>
                 <div style="text-align:center;margin:24px 0;">
-                    <div style="font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px;">Уровень</div>
+                    <div style="font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px;">Level</div>
                     <div style="font-size:44px;font-weight:800;color:${levelColor};margin:6px 0;">${level}</div>
-                    <div style="font-size:14px;color:#555;">Решено заданий: <b>${total}</b> из 20</div>
+                    <div style="font-size:14px;color:#555;">Solved: <b>${total}</b> of 20</div>
                 </div>
                 <div style="max-width:520px;margin:0 auto 18px;">${blockRows}</div>
                 <div style="max-width:520px;margin:0 auto 18px;padding:12px 14px;background:#f6f8ff;border:1px solid #dfe4ff;border-radius:8px;font-size:13px;color:#333;line-height:1.5;">${explain}</div>
                 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;max-width:520px;margin:0 auto 22px;">${grid}</div>
                 <div style="text-align:center;">
-                    <button onclick="switchQuestion(state.current)" class="btn btn-secondary">← Продолжить тест</button>
+                    <button onclick="switchQuestion(state.current)" class="btn btn-secondary">← Back to Test</button>
                 </div>`;
         }
 
